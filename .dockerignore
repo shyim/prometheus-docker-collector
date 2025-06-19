@@ -1,0 +1,41 @@
+# Git files
+.git
+.gitignore
+
+# Build artifacts
+prometheus-docker-collector
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+*.test
+
+# Documentation
+*.md
+LICENSE
+
+# IDE files
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Docker files (don't copy Dockerfile into image)
+Dockerfile
+.dockerignore
+
+# Go test cache
+.cache

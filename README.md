@@ -1,14 +1,14 @@
 # Prometheus Docker Collector
 
-A lightweight Go service that automatically discovers and aggregates Prometheus metrics from Docker containers.
+A lightweight Go service that provides HTTP Service Discovery for Prometheus to automatically discover Docker containers.
 
-The use-case is to run the collector to scrape metrics from multiple containers and scrape only the collector inside your Grafana Alloy / Prometheus instance. This way you can avoid scraping each container individually and reduce the complexity of your Prometheus setup.
+The use-case is to run the collector to discover containers running metrics endpoints and expose them via HTTP Service Discovery API. This allows Prometheus to automatically discover and scrape targets without manual configuration.
 
 ## Features
 
 - **Auto-discovery**: Automatically finds containers with `prometheus.auto.enable=true` label
-- **Metrics Aggregation**: Collects and aggregates metrics from multiple containers
-- **Flexible Configuration**: Configure ports and filter metrics via Docker labels
+- **HTTP Service Discovery**: Provides Prometheus HTTP SD compatible endpoint
+- **Custom Labels**: Expose container metadata via `prometheus.auto.label.*` labels
 - **Label-based Filtering**: Filter containers by additional labels
 - **Lightweight**: ~12.4MB Docker image using Google Distroless
 - **Multi-platform**: Supports linux/amd64 and linux/arm64
@@ -41,22 +41,7 @@ services:
 
 ## Integration with Prometheus
 
-### Option 1: Static Configuration
-
-Add this job to your `prometheus.yml`:
-
-```yaml
-scrape_configs:
-  - job_name: 'docker-containers'
-    static_configs:
-      - targets: ['prometheus-collector:8080']
-    relabel_configs:
-      - source_labels: [__name__]
-        target_label: collected_from
-        replacement: docker
-```
-
-### Option 2: HTTP Service Discovery
+### HTTP Service Discovery
 
 Use HTTP SD to dynamically discover containers:
 
@@ -80,7 +65,6 @@ To enable metric collection from a container, add these labels:
 |-------|----------|---------|-------------|
 | `prometheus.auto.enable` | Yes | - | Set to `true` to enable discovery |
 | `prometheus.auto.port` | No | `80` | Port where metrics are exposed |
-| `prometheus.auto.metrics.drop` | No | - | Comma-separated list of metrics to exclude |
 | `prometheus.auto.label.<name>` | No | - | Labels to expose in HTTP Service Discovery |
 
 #### Example: Basic Setup
@@ -92,14 +76,6 @@ docker run -d \
   my-app:latest
 ```
 
-#### Example: With Metric Filtering
-
-```bash
-docker run -d \
-  --label prometheus.auto.enable=true \
-  --label prometheus.auto.metrics.drop="go_.*,process_.*" \
-  my-app:latest
-```
 
 #### Example: With HTTP SD Labels
 
@@ -122,8 +98,6 @@ docker run -d \
 
 ## Endpoints
 
-- `/metrics` - Aggregated metrics from all discovered containers
-- `/internal/metrics` - Internal Go runtime metrics
 - `/health` - Health check endpoint
 - `/sd` - HTTP Service Discovery endpoint for Prometheus (returns JSON targets)
 
@@ -146,9 +120,11 @@ Always mount the Docker socket as read-only:
 1. Connects to Docker daemon via socket
 2. Lists all running containers every 30 seconds
 3. Filters containers with `prometheus.auto.enable=true` label
-4. Fetches metrics from each container's exposed endpoint
-5. Aggregates and caches metrics
-6. Serves aggregated metrics at `/metrics`
+4. For each discovered container:
+   - Gets container IP address and port
+   - Creates HTTP SD target with `ip:port`
+   - Extracts labels from `prometheus.auto.label.*` container labels
+5. Exposes targets via `/sd` endpoint for Prometheus HTTP Service Discovery
 
 ## Contributing
 

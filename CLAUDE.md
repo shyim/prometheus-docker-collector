@@ -1,41 +1,32 @@
 # Project: Prometheus Docker Collector
 
 ## Overview
-This is a Go webserver that discovers and aggregates Prometheus metrics from Docker containers. It automatically finds containers with specific labels and exposes their metrics through a unified endpoint.
+This is a Go webserver that provides HTTP Service Discovery for Prometheus to automatically discover Docker containers. It finds containers with specific labels and exposes them as targets through the HTTP SD API.
 
 ## Key Features
 - Discovers containers with `prometheus.auto.enable=true` label
-- Fetches metrics from discovered containers
-- Aggregates all metrics and exposes them at `/metrics`
-- Updates metrics every 30 seconds
+- Exposes container targets via HTTP Service Discovery API
+- Supports custom labels via `prometheus.auto.label.*` 
+- Updates target list every 30 seconds
 - Provides health check endpoint
 
 ## Architecture
 - **Language**: Go 1.24
 - **Dependencies**: 
   - Docker SDK for Go (v28.2.2)
-  - Prometheus Go client library (v1.22.0)
 - **Design**: Uses interfaces for Docker client to enable testing
 
 ## Docker Labels
 Containers must have these labels to be discovered:
 - `prometheus.auto.enable=true` - Required to enable discovery
 - `prometheus.auto.port=<port>` - Optional, defaults to 80
-- `prometheus.auto.metrics.drop=<metric1>,<metric2>` - Optional, comma-separated list of metric names or regex patterns to exclude from this container's metrics
-  
-  Examples: 
-  - Exact matches: `prometheus.auto.metrics.drop="go_gc_duration_seconds,go_threads"`
-  - Regex patterns: `prometheus.auto.metrics.drop="go_.*,process_.*"`
-  - Mixed: `prometheus.auto.metrics.drop="go_.*,http_errors_total,process_.*"`
-  
-  The collector automatically detects whether a pattern is a regex (contains metacharacters like `.*+?^$[]{}()|\\`) or an exact match. Invalid regex patterns are treated as exact matches with a warning in the logs.
-
 - `prometheus.auto.label.<name>=<value>` - Optional, labels to expose in HTTP Service Discovery. Only labels with this prefix are exposed in the `/sd` endpoint.
   
   Example:
   ```bash
   docker run -d \
     --label prometheus.auto.enable=true \
+    --label prometheus.auto.port=9090 \
     --label prometheus.auto.label.environment=production \
     --label prometheus.auto.label.service=api \
     --label prometheus.auto.label.version=1.2.3 \
@@ -43,8 +34,6 @@ Containers must have these labels to be discovered:
   ```
 
 ## Endpoints
-- `/metrics` - Aggregated metrics from all discovered containers
-- `/internal/metrics` - Internal Go runtime metrics
 - `/health` - Health check endpoint
 - `/sd` - HTTP Service Discovery endpoint for Prometheus (returns JSON targets)
 
@@ -147,14 +136,13 @@ The application runs on port 8080 by default. It connects to Docker using enviro
 
 ## How It Works
 1. Connects to Docker daemon
-2. Lists all running containers
+2. Lists all running containers every 30 seconds
 3. Filters containers with `prometheus.auto.enable=true`
-4. For each container:
-   - Gets container IP address
-   - Fetches metrics from `http://<ip>:<port>/metrics`
-   - Caches the metrics
-5. Aggregates all metrics when `/metrics` is requested
-6. Updates every 30 seconds
+4. For each discovered container:
+   - Gets container IP address and port
+   - Creates HTTP SD target with `ip:port`
+   - Extracts labels from `prometheus.auto.label.*` container labels
+5. Exposes targets via `/sd` endpoint for Prometheus HTTP Service Discovery
 
 ## HTTP Service Discovery
 

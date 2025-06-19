@@ -4,19 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type DockerClient interface {
@@ -33,7 +29,6 @@ type HTTPSDTarget struct {
 type MetricsCollector struct {
 	dockerClient DockerClient
 	mu           sync.RWMutex
-	metricsCache map[string]string
 	labelFilter  map[string]string
 	sdTargets    []HTTPSDTarget // Cache for HTTP SD targets
 }
@@ -58,7 +53,6 @@ func NewMetricsCollector() (*MetricsCollector, error) {
 
 	return &MetricsCollector{
 		dockerClient: cli,
-		metricsCache: make(map[string]string),
 		labelFilter:  labelFilter,
 		sdTargets:    []HTTPSDTarget{},
 	}, nil
@@ -96,41 +90,14 @@ func (mc *MetricsCollector) discoverContainers(ctx context.Context) ([]container
 	return prometheusContainers, nil
 }
 
-func (mc *MetricsCollector) fetchMetrics(ctx context.Context, ip string, port string) (string, error) {
-	url := fmt.Sprintf("http://%s:%s/metrics", ip, port)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch metrics from %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, url)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	return string(body), nil
-}
-
-func (mc *MetricsCollector) updateMetrics(ctx context.Context) {
+func (mc *MetricsCollector) updateTargets(ctx context.Context) {
 	containers, err := mc.discoverContainers(ctx)
 	if err != nil {
 		log.Printf("Error discovering containers: %v", err)
 		return
 	}
 
-	newMetrics := make(map[string]string)
 	newTargets := []HTTPSDTarget{}
 	var wg sync.WaitGroup
 	var targetsMu sync.Mutex
@@ -164,25 +131,6 @@ func (mc *MetricsCollector) updateMetrics(ctx context.Context) {
 				return
 			}
 
-			metrics, err := mc.fetchMetrics(ctx, containerIP, port)
-			if err != nil {
-				log.Printf("Error fetching metrics from container %s: %v", c.ID, err)
-				return
-			}
-
-			// Apply metric filtering if specified
-			if dropMetrics := c.Labels["prometheus.auto.metrics.drop"]; dropMetrics != "" {
-				dropList := strings.Split(dropMetrics, ",")
-				for i := range dropList {
-					dropList[i] = strings.TrimSpace(dropList[i])
-				}
-				metrics = filterMetrics(metrics, dropList)
-			}
-
-			mc.mu.Lock()
-			newMetrics[c.ID] = metrics
-			mc.mu.Unlock()
-
 			// Create HTTP SD target
 			target := HTTPSDTarget{
 				Targets: []string{fmt.Sprintf("%s:%s", containerIP, port)},
@@ -209,144 +157,10 @@ func (mc *MetricsCollector) updateMetrics(ctx context.Context) {
 	wg.Wait()
 
 	mc.mu.Lock()
-	mc.metricsCache = newMetrics
 	mc.sdTargets = newTargets
 	mc.mu.Unlock()
 }
 
-func filterMetrics(metrics string, dropList []string) string {
-	if len(dropList) == 0 {
-		return metrics
-	}
-
-	// Compile regex patterns
-	var patterns []*regexp.Regexp
-	var exactMatches []string
-
-	for _, drop := range dropList {
-		// Check if it looks like a regex pattern (contains regex metacharacters)
-		if strings.ContainsAny(drop, ".*+?^$[]{}()|\\") {
-			pattern, err := regexp.Compile(drop)
-			if err != nil {
-				log.Printf("Invalid regex pattern '%s': %v, treating as exact match", drop, err)
-				exactMatches = append(exactMatches, drop)
-			} else {
-				patterns = append(patterns, pattern)
-			}
-		} else {
-			exactMatches = append(exactMatches, drop)
-		}
-	}
-
-	lines := strings.Split(metrics, "\n")
-	var filtered []string
-	var currentMetric string
-	skipMetric := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// Skip empty lines
-		if trimmed == "" {
-			if !skipMetric {
-				filtered = append(filtered, line)
-			}
-			continue
-		}
-
-		// Check if it's a comment line
-		if strings.HasPrefix(trimmed, "#") {
-			// Extract metric name from HELP or TYPE comments
-			if strings.HasPrefix(trimmed, "# HELP") || strings.HasPrefix(trimmed, "# TYPE") {
-				parts := strings.Fields(trimmed)
-				if len(parts) >= 3 {
-					currentMetric = parts[2]
-					skipMetric = false
-
-					// Check exact matches
-					for _, exact := range exactMatches {
-						if currentMetric == exact {
-							skipMetric = true
-							break
-						}
-					}
-
-					// Check regex patterns
-					if !skipMetric {
-						for _, pattern := range patterns {
-							if pattern.MatchString(currentMetric) {
-								skipMetric = true
-								break
-							}
-						}
-					}
-				}
-			}
-			if !skipMetric {
-				filtered = append(filtered, line)
-			}
-		} else {
-			// It's a metric line
-			if !skipMetric {
-				// Extract metric name from the line (everything before the first space or {)
-				metricName := trimmed
-				if idx := strings.IndexAny(trimmed, " {"); idx != -1 {
-					metricName = trimmed[:idx]
-				}
-
-				// Check exact matches
-				for _, exact := range exactMatches {
-					if metricName == exact {
-						skipMetric = true
-						break
-					}
-				}
-
-				// Check regex patterns
-				if !skipMetric {
-					for _, pattern := range patterns {
-						if pattern.MatchString(metricName) {
-							skipMetric = true
-							break
-						}
-					}
-				}
-
-				if !skipMetric {
-					filtered = append(filtered, line)
-				}
-			}
-		}
-	}
-
-	return strings.Join(filtered, "\n")
-}
-
-func (mc *MetricsCollector) aggregateMetrics() string {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-
-	var aggregated strings.Builder
-
-	for containerID, metrics := range mc.metricsCache {
-		aggregated.WriteString(fmt.Sprintf("# Metrics from container %s\n", containerID))
-		aggregated.WriteString(metrics)
-		if !strings.HasSuffix(metrics, "\n") {
-			aggregated.WriteString("\n")
-		}
-		aggregated.WriteString("\n")
-	}
-
-	return aggregated.String()
-}
-
-func (mc *MetricsCollector) metricsHandler(w http.ResponseWriter, r *http.Request) {
-	aggregatedMetrics := mc.aggregateMetrics()
-
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, aggregatedMetrics)
-}
 
 func (mc *MetricsCollector) httpSDHandler(w http.ResponseWriter, r *http.Request) {
 	mc.mu.RLock()
@@ -369,22 +183,18 @@ func main() {
 		log.Fatalf("Failed to create metrics collector: %v", err)
 	}
 
-	reg := prometheus.NewRegistry()
-
 	ctx := context.Background()
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
-		collector.updateMetrics(ctx)
+		collector.updateTargets(ctx)
 
 		for range ticker.C {
-			collector.updateMetrics(ctx)
+			collector.updateTargets(ctx)
 		}
 	}()
 
-	http.HandleFunc("/metrics", collector.metricsHandler)
-	http.Handle("/internal/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "OK")

@@ -39,6 +39,37 @@ services:
     restart: unless-stopped
 ```
 
+## Integration with Prometheus
+
+### Option 1: Static Configuration
+
+Add this job to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'docker-containers'
+    static_configs:
+      - targets: ['prometheus-collector:8080']
+    relabel_configs:
+      - source_labels: [__name__]
+        target_label: collected_from
+        replacement: docker
+```
+
+### Option 2: HTTP Service Discovery
+
+Use HTTP SD to dynamically discover containers:
+
+```yaml
+scrape_configs:
+  - job_name: 'docker-containers'
+    http_sd_configs:
+      - url: 'http://prometheus-collector:8080/sd'
+        refresh_interval: 30s
+```
+
+This will automatically discover and scrape metrics from individual containers. Only labels defined with `prometheus.auto.label.<name>` are exposed for relabeling in Prometheus.
+
 ## Configuration
 
 ### Container Labels
@@ -109,70 +140,6 @@ Always mount the Docker socket as read-only:
 -v /var/run/docker.sock:/var/run/docker.sock:ro
 ```
 
-## Development
-
-### Prerequisites
-
-- Go 1.24+
-- Docker (for testing with containers)
-
-### Building
-
-```bash
-# Clone the repository
-git clone https://github.com/shyim/prometheus-docker-collector.git
-cd prometheus-docker-collector
-
-# Build the binary
-go build
-
-# Run tests
-go test -v
-
-# Run with coverage
-go test -v -cover
-```
-
-### Building Docker Image
-
-```bash
-# Build for current platform
-docker build -t prometheus-docker-collector:latest .
-
-# Build for multiple platforms
-docker buildx build --platform linux/amd64,linux/arm64 -t prometheus-docker-collector:latest .
-```
-
-## Integration with Prometheus
-
-### Option 1: Static Configuration
-
-Add this job to your `prometheus.yml`:
-
-```yaml
-scrape_configs:
-  - job_name: 'docker-containers'
-    static_configs:
-      - targets: ['prometheus-collector:8080']
-    relabel_configs:
-      - source_labels: [__name__]
-        target_label: collected_from
-        replacement: docker
-```
-
-### Option 2: HTTP Service Discovery
-
-Use HTTP SD to dynamically discover containers:
-
-```yaml
-scrape_configs:
-  - job_name: 'docker-containers'
-    http_sd_configs:
-      - url: 'http://prometheus-collector:8080/sd'
-        refresh_interval: 30s
-```
-
-This will automatically discover and scrape metrics from individual containers. Only labels defined with `prometheus.auto.label.<name>` are exposed for relabeling in Prometheus.
 
 ## How It Works
 

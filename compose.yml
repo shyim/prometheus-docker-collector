@@ -11,5 +11,27 @@ services:
       prometheus.auto.label.service: "valkey"
       prometheus.auto.label.component: "cache"
       prometheus.auto.label.environment: "development"
+  collector:
+    image: ghcr.io/shyim/prometheus-docker-collector:latest
+    build:
+      context: .
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
-  
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    configs:
+      - source: prometheus
+        target: /etc/prometheus/prometheus.yml
+
+configs:
+  prometheus:
+    content: |
+      global:
+        scrape_interval: 15s
+      scrape_configs:
+        - job_name: 'collector'
+          http_sd_configs:
+            - url: 'http://collector:8080/sd'

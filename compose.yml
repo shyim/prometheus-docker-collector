@@ -1,0 +1,15 @@
+services:
+  valkey:
+    image: valkey/valkey:alpine
+  valkey-exporter:
+    image: oliver006/redis_exporter
+    environment:
+      REDIS_ADDR: "valkey:6379"
+    labels:
+      prometheus.auto.enable: "true"
+      prometheus.auto.port: "9121"
+      prometheus.auto.label.service: "valkey"
+      prometheus.auto.label.component: "cache"
+      prometheus.auto.label.environment: "development"
+
+  

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -23,11 +24,18 @@ type DockerClient interface {
 	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
 }
 
+// HTTPSDTarget represents a target in Prometheus HTTP SD format
+type HTTPSDTarget struct {
+	Targets []string          `json:"targets"`
+	Labels  map[string]string `json:"labels"`
+}
+
 type MetricsCollector struct {
 	dockerClient DockerClient
 	mu           sync.RWMutex
 	metricsCache map[string]string
 	labelFilter  map[string]string
+	sdTargets    []HTTPSDTarget // Cache for HTTP SD targets
 }
 
 func NewMetricsCollector() (*MetricsCollector, error) {
@@ -52,6 +60,7 @@ func NewMetricsCollector() (*MetricsCollector, error) {
 		dockerClient: cli,
 		metricsCache: make(map[string]string),
 		labelFilter:  labelFilter,
+		sdTargets:    []HTTPSDTarget{},
 	}, nil
 }
 
@@ -122,7 +131,9 @@ func (mc *MetricsCollector) updateMetrics(ctx context.Context) {
 	}
 
 	newMetrics := make(map[string]string)
+	newTargets := []HTTPSDTarget{}
 	var wg sync.WaitGroup
+	var targetsMu sync.Mutex
 
 	for _, c := range containers {
 		wg.Add(1)
@@ -171,6 +182,27 @@ func (mc *MetricsCollector) updateMetrics(ctx context.Context) {
 			mc.mu.Lock()
 			newMetrics[c.ID] = metrics
 			mc.mu.Unlock()
+
+			// Create HTTP SD target
+			target := HTTPSDTarget{
+				Targets: []string{fmt.Sprintf("%s:%s", containerIP, port)},
+				Labels:  make(map[string]string),
+			}
+
+			// Only add labels that start with prometheus.auto.label.
+			for k, v := range c.Labels {
+				if strings.HasPrefix(k, "prometheus.auto.label.") {
+					// Extract the label name after prometheus.auto.label.
+					labelName := strings.TrimPrefix(k, "prometheus.auto.label.")
+					if labelName != "" {
+						target.Labels[labelName] = v
+					}
+				}
+			}
+
+			targetsMu.Lock()
+			newTargets = append(newTargets, target)
+			targetsMu.Unlock()
 		}(c)
 	}
 
@@ -178,6 +210,7 @@ func (mc *MetricsCollector) updateMetrics(ctx context.Context) {
 
 	mc.mu.Lock()
 	mc.metricsCache = newMetrics
+	mc.sdTargets = newTargets
 	mc.mu.Unlock()
 }
 
@@ -315,6 +348,21 @@ func (mc *MetricsCollector) metricsHandler(w http.ResponseWriter, r *http.Reques
 	fmt.Fprint(w, aggregatedMetrics)
 }
 
+func (mc *MetricsCollector) httpSDHandler(w http.ResponseWriter, r *http.Request) {
+	mc.mu.RLock()
+	targets := mc.sdTargets
+	mc.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	
+	if err := json.NewEncoder(w).Encode(targets); err != nil {
+		log.Printf("Error encoding HTTP SD response: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+}
+
 func main() {
 	collector, err := NewMetricsCollector()
 	if err != nil {
@@ -341,6 +389,7 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "OK")
 	})
+	http.HandleFunc("/sd", collector.httpSDHandler)
 
 	log.Println("Starting Prometheus Docker Collector on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {

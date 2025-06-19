@@ -50,6 +50,7 @@ To enable metric collection from a container, add these labels:
 | `prometheus.auto.enable` | Yes | - | Set to `true` to enable discovery |
 | `prometheus.auto.port` | No | `80` | Port where metrics are exposed |
 | `prometheus.auto.metrics.drop` | No | - | Comma-separated list of metrics to exclude |
+| `prometheus.auto.label.<name>` | No | - | Labels to expose in HTTP Service Discovery |
 
 #### Example: Basic Setup
 
@@ -69,6 +70,18 @@ docker run -d \
   my-app:latest
 ```
 
+#### Example: With HTTP SD Labels
+
+```bash
+docker run -d \
+  --label prometheus.auto.enable=true \
+  --label prometheus.auto.port=9090 \
+  --label prometheus.auto.label.environment=production \
+  --label prometheus.auto.label.service=api \
+  --label prometheus.auto.label.team=platform \
+  my-app:latest
+```
+
 ### Environment Variables
 
 | Variable | Description | Example |
@@ -81,6 +94,7 @@ docker run -d \
 - `/metrics` - Aggregated metrics from all discovered containers
 - `/internal/metrics` - Internal Go runtime metrics
 - `/health` - Health check endpoint
+- `/sd` - HTTP Service Discovery endpoint for Prometheus (returns JSON targets)
 
 ## Security Considerations
 
@@ -131,6 +145,8 @@ docker buildx build --platform linux/amd64,linux/arm64 -t prometheus-docker-coll
 
 ## Integration with Prometheus
 
+### Option 1: Static Configuration
+
 Add this job to your `prometheus.yml`:
 
 ```yaml
@@ -143,6 +159,20 @@ scrape_configs:
         target_label: collected_from
         replacement: docker
 ```
+
+### Option 2: HTTP Service Discovery
+
+Use HTTP SD to dynamically discover containers:
+
+```yaml
+scrape_configs:
+  - job_name: 'docker-containers'
+    http_sd_configs:
+      - url: 'http://prometheus-collector:8080/sd'
+        refresh_interval: 30s
+```
+
+This will automatically discover and scrape metrics from individual containers. Only labels defined with `prometheus.auto.label.<name>` are exposed for relabeling in Prometheus.
 
 ## How It Works
 

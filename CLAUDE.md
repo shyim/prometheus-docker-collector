@@ -30,10 +30,23 @@ Containers must have these labels to be discovered:
   
   The collector automatically detects whether a pattern is a regex (contains metacharacters like `.*+?^$[]{}()|\\`) or an exact match. Invalid regex patterns are treated as exact matches with a warning in the logs.
 
+- `prometheus.auto.label.<name>=<value>` - Optional, labels to expose in HTTP Service Discovery. Only labels with this prefix are exposed in the `/sd` endpoint.
+  
+  Example:
+  ```bash
+  docker run -d \
+    --label prometheus.auto.enable=true \
+    --label prometheus.auto.label.environment=production \
+    --label prometheus.auto.label.service=api \
+    --label prometheus.auto.label.version=1.2.3 \
+    my-app:latest
+  ```
+
 ## Endpoints
 - `/metrics` - Aggregated metrics from all discovered containers
 - `/internal/metrics` - Internal Go runtime metrics
 - `/health` - Health check endpoint
+- `/sd` - HTTP Service Discovery endpoint for Prometheus (returns JSON targets)
 
 ## Development Commands
 ```bash
@@ -142,3 +155,36 @@ The application runs on port 8080 by default. It connects to Docker using enviro
    - Caches the metrics
 5. Aggregates all metrics when `/metrics` is requested
 6. Updates every 30 seconds
+
+## HTTP Service Discovery
+
+The `/sd` endpoint provides Prometheus HTTP Service Discovery compatible JSON output. This allows Prometheus to dynamically discover containers managed by this collector.
+
+### Prometheus Configuration Example
+
+```yaml
+scrape_configs:
+  - job_name: 'docker-containers'
+    http_sd_configs:
+      - url: 'http://prometheus-docker-collector:8080/sd'
+        refresh_interval: 30s
+```
+
+### SD Response Format
+
+The endpoint returns a JSON array of targets with labels:
+
+```json
+[
+  {
+    "targets": ["192.168.1.100:80"],
+    "labels": {
+      "environment": "production",
+      "service": "api",
+      "version": "1.2.3"
+    }
+  }
+]
+```
+
+Only labels defined with `prometheus.auto.label.<name>=<value>` are exposed. If a container has no such labels, the `labels` object will be empty.

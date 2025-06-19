@@ -2,6 +2,8 @@
 
 A lightweight Go service that automatically discovers and aggregates Prometheus metrics from Docker containers.
 
+The use-case is to run the collector to scrape metrics from multiple containers and scrape only the collector inside your Grafana Alloy / Prometheus instance. This way you can avoid scraping each container individually and reduce the complexity of your Prometheus setup.
+
 ## Features
 
 - **Auto-discovery**: Automatically finds containers with `prometheus.auto.enable=true` label
